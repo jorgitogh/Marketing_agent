@@ -142,6 +142,10 @@ keywords = st.text_area("Keywords (SEO):", placeholder="Example: wellness, preve
 st.markdown("---")
 st.subheader("🧩 Image generation (Gemini / Nano Banana)")
 
+ASPECT_OPTIONS = ["1:1", "4:5", "3:4", "4:3", "9:16", "16:9", "1.91:1"]
+
+default_ar = PLATFORM_DEFAULT_AR.get(platform, "1:1")
+default_idx = ASPECT_OPTIONS.index(default_ar) if default_ar in ASPECT_OPTIONS else 0
 col1, col2 = st.columns(2)
 with col1:
     image_style = st.selectbox(
@@ -156,10 +160,10 @@ with col2:
         ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"]
     )
     aspect_ratio = st.selectbox(
-        "Aspect ratio:",
-        ["1:1", "3:4", "4:3", "9:16", "16:9", "1.91:1"],
-        index=["1:1","3:4","4:3","9:16","16:9","1.91:1"].index(PLATFORM_DEFAULT_AR.get(platform, "1:1"))
-    )
+    "Aspect ratio:",
+    ASPECT_OPTIONS,
+    index=default_idx
+)
     wants_text_in_image = st.checkbox("Render text inside the image", value=False)
 
 logo_instructions = st.text_input("Logo instructions (optional):", placeholder="e.g., place logo top-right, small")
@@ -242,8 +246,6 @@ if gen_image_btn:
 
     try:
         client = genai.Client(api_key=gemini_key)
-
-        # Config oficial para generación de imágenes (aspectRatio, numberOfImages, etc.) :contentReference[oaicite:2]{index=2}
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],  # solo imagen
             image_config=types.ImageConfig(
