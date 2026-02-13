@@ -1,10 +1,16 @@
 import os
+from io import BytesIO
+
 import streamlit as st
 from dotenv import load_dotenv
+from PIL import Image
 
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+
+from google import genai
+from google.genai import types
 
 load_dotenv()
 
@@ -12,26 +18,14 @@ load_dotenv()
 st.set_page_config(page_title="Content Generator 🤖", page_icon="🤖")
 st.title("Content generator")
 
-# Helpers
-PLATFORM_ASPECT = {
-    "Instagram": "1:1 (square) or 4:5 (feed portrait) / 9:16 (story)",
-    "Facebook": "1:1 or 4:5 / 16:9 (banner)",
-    "LinkedIn": "1.91:1 (landscape) or 4:5 (portrait)",
-    "Blog": "16:9 (hero) or 3:2",
-    "E-mail": "wide banner ~ 16:9 (safe center)",
+# ---------- helpers ----------
+PLATFORM_DEFAULT_AR = {
+    "Instagram": "4:5",
+    "Facebook": "4:5",
+    "LinkedIn": "1.91:1",
+    "Blog": "16:9",
+    "E-mail": "16:9",
 }
-
-def infer_aspect_ratio(platform: str) -> str:
-    # “Default” simple (puedes ajustar a tu gusto)
-    if platform == "LinkedIn":
-        return "1.91:1"
-    if platform == "Blog":
-        return "16:9"
-    if platform == "E-mail":
-        return "16:9"
-    if platform in ["Instagram", "Facebook"]:
-        return "4:5"
-    return "1:1"
 
 def llm_generate(llm, prompt: str) -> str:
     template = ChatPromptTemplate.from_messages([
@@ -58,74 +52,80 @@ def build_image_prompt(
     must_avoid: str,
     wants_text_in_image: bool,
 ):
-    aspect = infer_aspect_ratio(platform)
-    platform_hint = PLATFORM_ASPECT.get(platform, aspect)
-
-    # Reglas prácticas para outputs “marketing”
+    # Prompt tipo “brief” (suele funcionar MUY bien)
     text_rule = (
-        "Include short, legible on-image text (headline + optional CTA) in Spanish, "
-        "using clean typography and correct spelling. Keep text minimal and readable."
+        "Include short, legible on-image text in Spanish (headline + optional CTA). Use clean typography."
         if wants_text_in_image else
-        "Do NOT render any text in the image. Leave clean negative space where text could be overlaid later."
+        "Do NOT render any text in the image. Leave negative space for later overlay."
     )
-
     cta_rule = (
-        "Design should clearly support a call-to-action (CTA) visually (button-like area or focal element)."
+        "Make the design clearly support a call-to-action visually."
         if cta else
-        "Do NOT emphasize any CTA element visually."
+        "Do NOT emphasize CTA elements visually."
     )
 
-    # Prompt final (estructurado, estilo “brief”)
-    prompt = f"""
-You are a senior marketing designer. Create ONE high-end marketing visual.
+    return f"""
+You are a senior marketing designer. Create ONE premium marketing visual.
 
 BRIEF
-- Topic / concept: {topic.strip() if topic else "N/A"}
-- Platform: {platform} (typical formats: {platform_hint})
+- Topic: {topic.strip() if topic else "N/A"}
+- Platform: {platform}
 - Target audience: {audience}
 - Tone: {tone}
-- Copy length context (for layout density): {length}
+- Copy length context: {length}
 
-FORMAT
-- Aspect ratio: {aspect}
-- Composition: strong focal point, clean hierarchy, premium commercial look, social-ready framing.
+STYLE
+- Visual style: {image_style}
+- Look: high-end, clean hierarchy, modern commercial, brand-safe, not cheesy stock-photo.
 
 BRANDING
-- Brand name (if any): {brand_name.strip() if brand_name else "None"}
-- Brand colors (if any): {brand_colors.strip() if brand_colors else "None"}
+- Brand name: {brand_name.strip() if brand_name else "None"}
+- Brand colors: {brand_colors.strip() if brand_colors else "None"}
 - Logo instructions: {logo_instructions.strip() if logo_instructions else "No logo"}
 
-CONTENT DIRECTION
-- Style: {image_style}
+RULES
 - {text_rule}
 - {cta_rule}
-- If keywords are provided, align visuals to these concepts: {keywords.strip() if keywords else "None"}
+- Align visuals to these keywords if provided: {keywords.strip() if keywords else "None"}
 
 MUST INCLUDE
 {must_include.strip() if must_include else "- (none)"}
 
-MUST AVOID (NEGATIVE PROMPT)
+MUST AVOID (negative prompt)
 {must_avoid.strip() if must_avoid else "- (none)"}
-- No watermarks, no fake brand marks, no illegible gibberish text, no distorted anatomy/hands, no cluttered layout.
+- Avoid watermarks, clutter, distorted hands, illegible gibberish text, low-res artifacts.
 
 EXTRA DETAILS
 {extra_image_details.strip() if extra_image_details else "(none)"}
-
-Output: generate the image accordingly.
 """.strip()
 
-    return prompt
+def extract_first_image_bytes(response) -> bytes | None:
+    """
+    google-genai devuelve la imagen como inline_data en parts.
+    Esto intenta encontrar el primer part con inline_data (image bytes).
+    """
+    if not response or not getattr(response, "candidates", None):
+        return None
+    for cand in response.candidates:
+        content = getattr(cand, "content", None)
+        if not content or not getattr(content, "parts", None):
+            continue
+        for p in content.parts:
+            inline = getattr(p, "inline_data", None)
+            if inline and getattr(inline, "data", None):
+                return inline.data
+    return None
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
     st.subheader("🔑 Groq API Key (texto)")
-    api_key = st.text_input("API Key", type="password", placeholder="gsk_...")
-    st.caption("Consíguela en la consola de Groq.")
-    st.divider()
+    groq_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
 
-    st.subheader("🖼️ Google Gemini API (imagen)")
-    google_api_key = st.text_input("Google API Key", type="password", placeholder="AIza... (opcional)")
-    st.caption("Para generar imágenes con Nano Banana vía Gemini API (si luego lo conectas).")
+    st.divider()
+    st.subheader("🖼️ Google Gemini API Key (imagen)")
+    gemini_key = st.text_input("Gemini API Key", type="password", placeholder="AIza...")
+
+    st.caption("Modelos: Nano Banana = gemini-2.5-flash-image | Pro = gemini-3-pro-image-preview")
     st.divider()
 
 # ---------------- Form (texto) ----------------
@@ -140,7 +140,7 @@ keywords = st.text_area("Keywords (SEO):", placeholder="Example: wellness, preve
 
 # ---------------- Form (imagen) ----------------
 st.markdown("---")
-st.subheader("🧩 Image Prompt (para Nano Banana / Gemini API)")
+st.subheader("🧩 Image generation (Gemini / Nano Banana)")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -148,28 +148,33 @@ with col1:
         "Visual style:",
         ["Photorealistic", "Minimalist", "3D clean render", "Flat illustration", "Modern collage", "Product mockup"],
     )
-    brand_name = st.text_input("Brand name (optional):", placeholder="e.g., Cecotec / YourBrand")
+    brand_name = st.text_input("Brand name (optional):", placeholder="e.g., YourBrand")
     brand_colors = st.text_input("Brand colors (optional):", placeholder="e.g., #111827, #8B5CF6, white")
 with col2:
-    wants_text_in_image = st.checkbox("Render text inside the image (harder, more 'Pro')", value=False)
-    logo_instructions = st.text_input("Logo instructions (optional):", placeholder="e.g., place logo top-right, small")
-    st.caption(f"Suggested aspect ratio for {platform}: **{infer_aspect_ratio(platform)}**")
+    model_choice = st.selectbox(
+        "Gemini image model:",
+        ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"]
+    )
+    aspect_ratio = st.selectbox(
+        "Aspect ratio:",
+        ["1:1", "3:4", "4:3", "9:16", "16:9", "1.91:1"],
+        index=["1:1","3:4","4:3","9:16","16:9","1.91:1"].index(PLATFORM_DEFAULT_AR.get(platform, "1:1"))
+    )
+    wants_text_in_image = st.checkbox("Render text inside the image", value=False)
 
-must_include = st.text_area(
-    "Must include (optional):",
-    placeholder="e.g., a diverse group of people smiling; smartphone mockup; product centered; clean background...",
-)
-must_avoid = st.text_area(
-    "Must avoid / negative prompt (optional):",
-    placeholder="e.g., no medical imagery; no needles; no overly happy stock-photo vibe; no neon colors...",
-)
+logo_instructions = st.text_input("Logo instructions (optional):", placeholder="e.g., place logo top-right, small")
+must_include = st.text_area("Must include (optional):", placeholder="e.g., smartphone mockup, clean background, diverse people...")
+must_avoid = st.text_area("Must avoid (optional):", placeholder="e.g., no medical needles, no neon colors, no clutter...")
 extra_image_details = st.text_area(
     "Extra details for the image (your custom brief):",
-    placeholder="e.g., make it feel premium, Scandinavian lighting, soft shadows, lots of whitespace, modern typography space...",
+    placeholder="e.g., premium, Scandinavian lighting, soft shadows, lots of whitespace..."
 )
 
-# ---------------- Action buttons ----------------
-colA, colB = st.columns(2)
+# ---------------- Buttons ----------------
+colA, colB, colC = st.columns(3)
+gen_text_btn = colA.button("✍️ Generate text")
+gen_prompt_btn = colB.button("🧾 Generate image prompt")
+gen_image_btn = colC.button("🖼️ Generate image (Gemini)")
 
 def build_text_prompt():
     return f"""
@@ -184,20 +189,15 @@ Return only the final text in your response and don't put it inside quotes.
 {"- Keywords to include (for SEO): " + keywords if keywords else ""}
 """.strip()
 
-with colA:
-    gen_text = st.button("✍️ Generate text")
-with colB:
-    gen_image_prompt = st.button("🖼️ Generate image prompt")
-
-# ---------------- Run text generation ----------------
-if gen_text:
-    if not api_key:
-        st.error("Introduce tu Groq API Key en la barra lateral para continuar.")
+# ---------------- Generate text (Groq) ----------------
+if gen_text_btn:
+    if not groq_key:
+        st.error("Introduce tu Groq API Key en la barra lateral.")
         st.stop()
 
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
-        api_key=api_key,
+        api_key=groq_key,
         temperature=0.7,
         max_tokens=None,
         timeout=None,
@@ -209,28 +209,72 @@ if gen_text:
         st.subheader("✅ Generated copy")
         st.markdown(res)
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Groq error: {e}")
 
-# ---------------- Run image prompt generation (no API call, only prompt) ----------------
-if gen_image_prompt:
-    img_prompt = build_image_prompt(
-        topic=topic,
-        platform=platform,
-        tone=tone,
-        audience=audience,
-        length=length,
-        cta=cta,
-        keywords=keywords,
-        extra_image_details=extra_image_details,
-        image_style=image_style,
-        brand_name=brand_name,
-        brand_colors=brand_colors,
-        logo_instructions=logo_instructions,
-        must_include=must_include,
-        must_avoid=must_avoid,
-        wants_text_in_image=wants_text_in_image,
-    )
+# ---------------- Generate image prompt (no image yet) ----------------
+img_prompt = build_image_prompt(
+    topic=topic,
+    platform=platform,
+    tone=tone,
+    audience=audience,
+    length=length,
+    cta=cta,
+    keywords=keywords,
+    extra_image_details=extra_image_details,
+    image_style=image_style,
+    brand_name=brand_name,
+    brand_colors=brand_colors,
+    logo_instructions=logo_instructions,
+    must_include=must_include,
+    must_avoid=must_avoid,
+    wants_text_in_image=wants_text_in_image,
+)
 
-    st.subheader("✅ Image prompt (ready for Nano Banana)")
+if gen_prompt_btn:
+    st.subheader("✅ Image prompt (ready)")
     st.code(img_prompt, language="text")
-    st.caption("Tip: si activas texto dentro de la imagen, suele ir mejor con el modelo Pro.")
+
+# ---------------- Generate image (Gemini) ----------------
+if gen_image_btn:
+    if not gemini_key:
+        st.error("Introduce tu Gemini API Key en la barra lateral.")
+        st.stop()
+
+    try:
+        client = genai.Client(api_key=gemini_key)
+
+        # Config oficial para generación de imágenes (aspectRatio, numberOfImages, etc.) :contentReference[oaicite:2]{index=2}
+        config = types.GenerateContentConfig(
+            response_modalities=["IMAGE"],  # solo imagen
+            image_config=types.ImageConfig(
+                aspect_ratio=aspect_ratio,
+                number_of_images=1,
+            ),
+        )
+
+        response = client.models.generate_content(
+            model=model_choice,
+            contents=img_prompt,
+            config=config,
+        )
+
+        img_bytes = extract_first_image_bytes(response)
+        if not img_bytes:
+            st.warning("No he encontrado bytes de imagen en la respuesta. Muestra la respuesta para debug.")
+            st.write(response)
+            st.stop()
+
+        image = Image.open(BytesIO(img_bytes))
+
+        st.subheader("✅ Generated image")
+        st.image(image, use_container_width=True)
+
+        st.download_button(
+            "Download image",
+            data=img_bytes,
+            file_name="marketing_image.png",
+            mime="image/png",
+        )
+
+    except Exception as e:
+        st.error(f"Gemini error: {e}")
