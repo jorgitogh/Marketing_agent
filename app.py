@@ -196,9 +196,8 @@ if st.button("🚀 Generate creative (image + copy)"):
         config = types.GenerateContentConfig(
             response_modalities=["TEXT", "IMAGE"],
             image_config=types.ImageConfig(
-                aspect_ratio=aspect_ratio,
-                number_of_images=1,
-            ),
+                aspect_ratio=aspect_ratio
+            )
         )
 
         resp = client.models.generate_content(
