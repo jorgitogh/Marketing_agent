@@ -218,8 +218,7 @@ with st.sidebar:
     # Image model: image-capable
     image_model = st.selectbox("Image model", ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"], index=0)
 
-    st.caption("Si antes te devolvía solo texto, este flujo fuerza una llamada de **solo imagen**.")
-
+    
 
 # ---------------- Front ----------------
 left, right = st.columns([1.05, 1])
